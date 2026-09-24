@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Find the minimum number of MTG bulk storage sets needed to build a decklist.">
+  <title>MTG Bulk Box Scout</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main class="app">
+    <header>
+      <h1>MTG Bulk Box Scout</h1>
+      <p>
+        Paste a decklist and the site will use Scryfall print data
+        to find a small set of storage boxes to check.
+      </p>
+    </header>
+
+    <section class="panel">
+      <label for="decklist"><strong>Decklist</strong></label>
+
+      <textarea
+        id="decklist"
+        spellcheck="false"
+        placeholder="4 Lightning Bolt
+4 Counterspell
+1 Sol Ring
+4 Brainstorm"></textarea>
+
+      <div class="controls">
+        <label class="control">
+          <input type="radio" name="mode" value="sets" checked>
+          Minimize sets
+        </label>
+
+        <label class="control">
+          <input type="radio" name="mode" value="rarity-bins">
+          Treat set + rarity as separate storage boxes
+        </label>
+      </div>
+
+      <div class="actions">
+        <button id="analyzeBtn" class="primary" type="button">
+          Analyze deck
+        </button>
+
+        <button id="clearCache" class="secondary" type="button">
+          Clear Scryfall cache
+        </button>
+
+        <span id="status" class="status" aria-live="polite">
+          Ready.
+        </span>
+      </div>
+
+      <div id="progress" class="progress" hidden></div>
+    </section>
+
+    <section id="setPanel" class="panel" hidden>
+      <div class="panel-heading">
+        <div>
+          <h2>Set filters</h2>
+          <p>
+            Uncheck sets that are not in your bulk storage.
+            Changes recalculate the result immediately.
+          </p>
+        </div>
+
+        <div class="small-actions">
+          <button id="enableAll" class="secondary" type="button">
+            Enable all
+          </button>
+
+          <button id="disableAll" class="secondary" type="button">
+            Disable all
+          </button>
+        </div>
+      </div>
+
+      <input
+        id="setFilter"
+        class="set-search"
+        type="search"
+        placeholder="Filter sets by name or code">
+
+      <div id="setList" class="set-list"></div>
+    </section>
+
+    <section id="resultsPanel" class="panel" hidden>
+      <div id="summary" class="summary"></div>
+      <div id="results" class="results"></div>
+    </section>
+
+    <section id="missingPanel" class="panel" hidden>
+      <div class="panel-heading">
+        <div>
+          <h2>Could not resolve</h2>
+          <p>
+            These lines were not resolved to a physical-paper Scryfall printing.
+          </p>
+        </div>
+      </div>
+
+      <div id="missing"></div>
+    </section>
+
+    <footer>
+      Card data and images are provided by Scryfall.
+      This is an unofficial community tool.
+    </footer>
+  </main>
+</body>
+</html>
