@@ -3,7 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Find the minimum number of MTG bulk storage sets needed to build a decklist.">
+  <meta
+    name="description"
+    content="Find a small number of MTG bulk storage sets to check for a decklist."
+  >
   <title>MTG Bulk Box Scout</title>
   <link rel="stylesheet" href="styles.css">
   <script src="app.js" defer></script>
@@ -27,7 +30,8 @@
         placeholder="4 Lightning Bolt
 4 Counterspell
 1 Sol Ring
-4 Brainstorm"></textarea>
+4 Brainstorm"
+      ></textarea>
 
       <div class="controls">
         <label class="control">
@@ -61,10 +65,106 @@
     <section id="setPanel" class="panel" hidden>
       <div class="panel-heading">
         <div>
-          <h2>Set filters</h2>
+          <h2>Search filters</h2>
+          <p>
+            Changes below recalculate the result immediately.
+            Set codes are shown in uppercase.
+          </p>
+        </div>
+      </div>
+
+      <div class="filter-grid">
+        <fieldset class="filter-group">
+          <legend>Card filters</legend>
+
+          <label class="toggle-option">
+            <input type="checkbox" id="ignoreLands">
+            Ignore lands from the decklist
+          </label>
+
+          <label class="toggle-option">
+            <input type="checkbox" id="checklistToggle">
+            Turn result sets into a collection checklist
+          </label>
+
+          <div class="filter-help">
+            Rarity filters apply to possible printings. A card remains
+            searchable when it has at least one enabled-rarity printing.
+          </div>
+        </fieldset>
+
+        <fieldset class="filter-group">
+          <legend>Enabled rarities</legend>
+
+          <div class="rarity-list">
+            <label class="toggle-option">
+              <input
+                class="rarity-toggle"
+                type="checkbox"
+                data-rarity="common"
+                checked
+              >
+              Common
+            </label>
+
+            <label class="toggle-option">
+              <input
+                class="rarity-toggle"
+                type="checkbox"
+                data-rarity="uncommon"
+                checked
+              >
+              Uncommon
+            </label>
+
+            <label class="toggle-option">
+              <input
+                class="rarity-toggle"
+                type="checkbox"
+                data-rarity="rare"
+                checked
+              >
+              Rare
+            </label>
+
+            <label class="toggle-option">
+              <input
+                class="rarity-toggle"
+                type="checkbox"
+                data-rarity="mythic"
+                checked
+              >
+              Mythic
+            </label>
+
+            <label class="toggle-option">
+              <input
+                class="rarity-toggle"
+                type="checkbox"
+                data-rarity="special"
+                checked
+              >
+              Special
+            </label>
+
+            <label class="toggle-option">
+              <input
+                class="rarity-toggle"
+                type="checkbox"
+                data-rarity="bonus"
+                checked
+              >
+              Bonus
+            </label>
+          </div>
+        </fieldset>
+      </div>
+
+      <div class="set-filter-heading">
+        <div>
+          <h2>Sets</h2>
           <p>
             Uncheck sets that are not in your bulk storage.
-            Changes recalculate the result immediately.
           </p>
         </div>
 
@@ -83,7 +183,8 @@
         id="setFilter"
         class="set-search"
         type="search"
-        placeholder="Filter sets by name or code">
+        placeholder="Filter sets by name or code"
+      >
 
       <div id="setList" class="set-list"></div>
     </section>
@@ -91,6 +192,25 @@
     <section id="resultsPanel" class="panel" hidden>
       <div id="summary" class="summary"></div>
       <div id="results" class="results"></div>
+    </section>
+
+    <section
+      id="unavailablePanel"
+      class="panel unavailable-panel"
+      hidden
+    >
+      <div class="panel-heading">
+        <div>
+          <h2>Unavailable with current filters</h2>
+          <p>
+            These cards remain visible and hoverable, but none of their
+            paper printings match the currently enabled sets, rarities,
+            and land settings.
+          </p>
+        </div>
+      </div>
+
+      <div id="unavailable" class="unavailable-list"></div>
     </section>
 
     <section id="missingPanel" class="panel" hidden>

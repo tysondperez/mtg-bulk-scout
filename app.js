@@ -1,21 +1,42 @@
 const API_BASE = "https://api.scryfall.com";
 
-const CACHE_KEY = "mtg-bulk-scout-card-cache-v1";
-const SETTINGS_KEY = "mtg-bulk-scout-settings-v1";
+const CACHE_KEY = "mtg-bulk-scout-card-cache-v2";
+const SETTINGS_KEY = "mtg-bulk-scout-settings-v2";
 
-const CACHE_MAX_AGE_MS =
-  30 * 24 * 60 * 60 * 1000;
+const CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
-// ~6.7 requests/sec, deliberately below Scryfall's requested ceiling.
+// Deliberately below Scryfall's stated request-rate ceiling.
 const REQUEST_INTERVAL_MS = 150;
 
-// Exact set-cover search can get expensive on complicated decklists.
+// Exact set-cover search can get expensive for complicated decklists.
 const SOLVER_TIME_LIMIT_MS = 3500;
+
+const RARITIES = [
+  { value: "common", label: "Common" },
+  { value: "uncommon", label: "Uncommon" },
+  { value: "rare", label: "Rare" },
+  { value: "mythic", label: "Mythic" },
+  { value: "special", label: "Special" },
+  { value: "bonus", label: "Bonus" },
+];
 
 const state = {
   cards: [],
   setMeta: new Map(),
+
+  // Uppercase set codes are used everywhere internally.
   disabledSets: new Set(),
+
+  enabledRarities: new Set(
+    RARITIES.map((rarity) => rarity.value)
+  ),
+
+  ignoreLands: false,
+  checklistEnabled: false,
+
+  // Checklist state intentionally lasts only for the current page/deck.
+  checkedLocations: new Set(),
+
   analyzed: false,
 };
 
@@ -28,85 +49,216 @@ const $ = (id) => document.getElementById(id);
 const decklistEl = $("decklist");
 const analyzeBtn = $("analyzeBtn");
 const statusEl = $("status");
+const progressEl = $("progress");
+
 const setPanel = $("setPanel");
 const setListEl = $("setList");
 const setFilterEl = $("setFilter");
+
 const resultsPanel = $("resultsPanel");
-const resultsEl = $("results");
 const summaryEl = $("summary");
+const resultsEl = $("results");
+
 const missingPanel = $("missingPanel");
 const missingEl = $("missing");
-const progressEl = $("progress");
+
+const unavailablePanel = $("unavailablePanel");
+const unavailableEl = $("unavailable");
+
+const ignoreLandsEl = $("ignoreLands");
+const checklistToggleEl = $("checklistToggle");
 
 loadSettings();
+applyLoadedSettingsToControls();
 
-analyzeBtn.addEventListener("click", analyzeDeck);
+analyzeBtn.addEventListener(
+  "click",
+  analyzeDeck
+);
 
-setFilterEl.addEventListener("input", renderSetFilters);
+$("clearCache").addEventListener(
+  "click",
+  () => {
+    cache = {};
+    saveCache();
 
-$("enableAll").addEventListener("click", () => {
-  state.disabledSets.clear();
-
-  saveSettings();
-  renderSetFilters();
-  recomputeResults();
-});
-
-$("disableAll").addEventListener("click", () => {
-  for (const code of state.setMeta.keys()) {
-    state.disabledSets.add(code);
+    setStatus(
+      "Scryfall lookup cache cleared."
+    );
   }
+);
 
-  saveSettings();
-  renderSetFilters();
-  recomputeResults();
-});
+$("enableAll").addEventListener(
+  "click",
+  () => {
+    state.disabledSets.clear();
 
-$("clearCache").addEventListener("click", () => {
-  cache = {};
-  saveCache();
-
-  setStatus("Scryfall lookup cache cleared.");
-});
-
-document.querySelectorAll('input[name="mode"]').forEach((radio) => {
-  radio.addEventListener("change", recomputeResults);
-});
-
-setListEl.addEventListener("change", (event) => {
-  const input = event.target.closest("input[data-set-code]");
-
-  if (!input) {
-    return;
+    saveSettings();
+    renderSetFilters();
+    recomputeResults();
   }
+);
 
-  const code = input.dataset.setCode;
-
-  if (input.checked) {
-    state.disabledSets.delete(code);
-  } else {
-    state.disabledSets.add(code);
-  }
-
-  saveSettings();
-  recomputeResults();
-});
-
-// On touchscreen devices there is no hover, so tapping a card toggles
-// its preview instead.
-document.addEventListener("click", (event) => {
-  const chip = event.target.closest(".card-chip");
-
-  document.querySelectorAll(".card-chip.open").forEach((el) => {
-    if (el !== chip) {
-      el.classList.remove("open");
+$("disableAll").addEventListener(
+  "click",
+  () => {
+    for (
+      const code of state.setMeta.keys()
+    ) {
+      state.disabledSets.add(code);
     }
+
+    saveSettings();
+    renderSetFilters();
+    recomputeResults();
+  }
+);
+
+setFilterEl.addEventListener(
+  "input",
+  renderSetFilters
+);
+
+ignoreLandsEl.addEventListener(
+  "change",
+  () => {
+    state.ignoreLands =
+      ignoreLandsEl.checked;
+
+    saveSettings();
+    renderSetFilters();
+    recomputeResults();
+  }
+);
+
+checklistToggleEl.addEventListener(
+  "change",
+  () => {
+    state.checklistEnabled =
+      checklistToggleEl.checked;
+
+    saveSettings();
+    recomputeResults();
+  }
+);
+
+document
+  .querySelectorAll(".rarity-toggle")
+  .forEach((checkbox) => {
+    checkbox.addEventListener(
+      "change",
+      () => {
+        const rarity =
+          checkbox.dataset.rarity;
+
+        if (checkbox.checked) {
+          state.enabledRarities.add(
+            rarity
+          );
+        } else {
+          state.enabledRarities.delete(
+            rarity
+          );
+        }
+
+        saveSettings();
+        renderSetFilters();
+        recomputeResults();
+      }
+    );
   });
 
-  if (chip && window.matchMedia("(hover: none)").matches) {
-    chip.classList.toggle("open");
+document
+  .querySelectorAll('input[name="mode"]')
+  .forEach((radio) => {
+    radio.addEventListener(
+      "change",
+      recomputeResults
+    );
+  });
+
+setListEl.addEventListener(
+  "change",
+  (event) => {
+    const input =
+      event.target.closest(
+        "input[data-set-code]"
+      );
+
+    if (!input) {
+      return;
+    }
+
+    const code =
+      input.dataset.setCode.toUpperCase();
+
+    if (input.checked) {
+      state.disabledSets.delete(code);
+    } else {
+      state.disabledSets.add(code);
+    }
+
+    saveSettings();
+    recomputeResults();
   }
-});
+);
+
+/*
+ * On touchscreen devices there is no hover,
+ * so tapping a card toggles its preview.
+ */
+document.addEventListener(
+  "click",
+  (event) => {
+    const chip =
+      event.target.closest(".card-chip");
+
+    document
+      .querySelectorAll(
+        ".card-chip.open"
+      )
+      .forEach((el) => {
+        if (el !== chip) {
+          el.classList.remove(
+            "open"
+          );
+        }
+      });
+
+    if (
+      chip &&
+      window.matchMedia(
+        "(hover: none)"
+      ).matches
+    ) {
+      chip.classList.toggle("open");
+    }
+  }
+);
+
+
+/* ============================================================
+   Filter controls
+   ============================================================ */
+
+function applyLoadedSettingsToControls() {
+  ignoreLandsEl.checked =
+    state.ignoreLands;
+
+  checklistToggleEl.checked =
+    state.checklistEnabled;
+
+  document
+    .querySelectorAll(
+      ".rarity-toggle"
+    )
+    .forEach((checkbox) => {
+      checkbox.checked =
+        state.enabledRarities.has(
+          checkbox.dataset.rarity
+        );
+    });
+}
 
 
 /* ============================================================
@@ -115,31 +267,49 @@ document.addEventListener("click", (event) => {
 
 async function analyzeDeck() {
   const runId = ++activeRun;
-  const cards = parseDecklist(decklistEl.value);
+
+  const cards =
+    parseDecklist(
+      decklistEl.value
+    );
 
   if (cards.length === 0) {
-    setStatus("Enter at least one card in the decklist.", true);
+    setStatus(
+      "Enter at least one card in the decklist.",
+      true
+    );
+
     return;
   }
 
   analyzeBtn.disabled = true;
 
+  progressEl.hidden = false;
+
+  setPanel.hidden = true;
   resultsPanel.hidden = true;
   missingPanel.hidden = true;
-  progressEl.hidden = false;
-  setPanel.hidden = true;
+  unavailablePanel.hidden = true;
 
   state.analyzed = false;
   state.cards = [];
   state.setMeta.clear();
 
+  // A newly analyzed deck starts with a fresh collection checklist.
+  state.checkedLocations.clear();
+
   resultsEl.innerHTML = "";
+  unavailableEl.innerHTML = "";
 
   const resolved = [];
   const missing = [];
 
   try {
-    for (let i = 0; i < cards.length; i++) {
+    for (
+      let i = 0;
+      i < cards.length;
+      i++
+    ) {
       if (runId !== activeRun) {
         return;
       }
@@ -151,14 +321,18 @@ async function analyzeDeck() {
       );
 
       try {
-        const lookup = await lookupCard(entry.name);
+        const lookup =
+          await lookupCard(
+            entry.name
+          );
 
         resolved.push({
           key: entry.key,
           inputName: entry.name,
           name: lookup.name,
           count: entry.count,
-          printings: lookup.printings,
+          printings:
+            lookup.printings,
           fuzzy: lookup.fuzzy,
         });
       } catch (error) {
@@ -175,7 +349,8 @@ async function analyzeDeck() {
       );
     }
 
-    state.cards = resolved;
+    state.cards =
+      resolved;
 
     buildSetMetadata();
     initializeUnknownSetsAsEnabled();
@@ -185,30 +360,43 @@ async function analyzeDeck() {
     progressEl.hidden = true;
     setPanel.hidden = false;
     resultsPanel.hidden = false;
-    missingPanel.hidden = missing.length === 0;
+    missingPanel.hidden =
+      missing.length === 0;
 
     renderMissing(missing);
     renderSetFilters();
     recomputeResults();
 
     const fuzzyCount =
-      resolved.filter((card) => card.fuzzy).length;
+      resolved.filter(
+        (card) => card.fuzzy
+      ).length;
 
     let suffix = "";
 
     if (fuzzyCount > 0) {
       suffix =
-        ` ${fuzzyCount} card${fuzzyCount === 1 ? " was" : "s were"} ` +
-        "fuzzy-matched.";
+        ` ${fuzzyCount} card${
+          fuzzyCount === 1
+            ? " was"
+            : "s were"
+        } fuzzy-matched.`;
     }
 
     setStatus(
-      `Resolved ${resolved.length} of ${cards.length} unique ` +
-      `card${cards.length === 1 ? "" : "s"}.${suffix}`
+      `Resolved ${resolved.length} of ${cards.length} unique card${
+        cards.length === 1
+          ? ""
+          : "s"
+      }.${suffix}`
     );
   } catch (error) {
     progressEl.hidden = true;
-    setStatus(error.message, true);
+
+    setStatus(
+      error.message,
+      true
+    );
   } finally {
     analyzeBtn.disabled = false;
   }
@@ -216,23 +404,22 @@ async function analyzeDeck() {
 
 
 /*
- * Supported examples:
+ * Supports common deck export forms:
  *
  *   4 Lightning Bolt
  *   4x Lightning Bolt
  *   Lightning Bolt x4
  *   1 Lightning Bolt (M11) 149
  *   1 Lightning Bolt [M11] 149
- *
- * Blank lines, comments, and simple Commander/Sideboard headers
- * are ignored.
  */
 function parseDecklist(text) {
   const map = new Map();
 
-  const lines = text.split(/\r?\n/);
-
-  for (const raw of lines) {
+  for (
+    const raw of text.split(
+      /\r?\n/
+    )
+  ) {
     let line = raw.trim();
 
     if (!line) {
@@ -240,13 +427,17 @@ function parseDecklist(text) {
     }
 
     if (
-      /^(?:sideboard|commander|companion|mainboard|deck)\s*:?$/i.test(line)
+      /^(?:sideboard|commander|companion|mainboard|deck)\s*:?$/i.test(
+        line
+      )
     ) {
       continue;
     }
 
     if (
-      /^(?:sideboard|commander|companion)\s*:/i.test(line)
+      /^(?:sideboard|commander|companion)\s*:/i.test(
+        line
+      )
     ) {
       continue;
     }
@@ -255,48 +446,59 @@ function parseDecklist(text) {
       continue;
     }
 
-    line = line.replace(
-      /^\*?\s*(?:sb|sideboard)\s*:\s*/i,
-      ""
-    );
+    line =
+      line.replace(
+        /^\*?\s*(?:sb|sideboard)\s*:\s*/i,
+        ""
+      );
 
     let count = 1;
     let name = line;
 
-    let match = line.match(
-      /^(\d+)\s*[x×]?\s+(.+)$/i
-    );
-
-    if (match) {
-      count = Number.parseInt(match[1], 10);
-      name = match[2].trim();
-    } else {
-      match = line.match(
-        /^(.+?)\s+[x×](\d+)$/i
+    let match =
+      line.match(
+        /^(\d+)\s*[x×]?\s+(.+)$/i
       );
 
+    if (match) {
+      count =
+        Number.parseInt(
+          match[1],
+          10
+        );
+
+      name =
+        match[2].trim();
+    } else {
+      match =
+        line.match(
+          /^(.+?)\s+[x×](\d+)$/i
+        );
+
       if (match) {
-        name = match[1].trim();
-        count = Number.parseInt(match[2], 10);
+        name =
+          match[1].trim();
+
+        count =
+          Number.parseInt(
+            match[2],
+            10
+          );
       }
     }
 
-    // Remove common export annotations.
-    //
-    // Example:
-    //   Lightning Bolt (M11) 149
-    //   Lightning Bolt [M11] 149
-    //
-    name = name
-      .replace(
-        /\s+\([A-Za-z0-9_-]{2,10}\)\s+\d+[A-Za-z]?\*?\s*$/i,
-        ""
-      )
-      .replace(
-        /\s+\[[A-Za-z0-9_-]{2,10}\]\s+\d+[A-Za-z]?\*?\s*$/i,
-        ""
-      )
-      .trim();
+    // Remove common set/collector-number annotations.
+    name =
+      name
+        .replace(
+          /\s+\([A-Za-z0-9_-]{2,10}\)\s+\d+[A-Za-z]?\*?\s*$/i,
+          ""
+        )
+        .replace(
+          /\s+\[[A-Za-z0-9_-]{2,10}\]\s+\d+[A-Za-z]?\*?\s*$/i,
+          ""
+        )
+        .trim();
 
     if (
       !name ||
@@ -306,12 +508,15 @@ function parseDecklist(text) {
       continue;
     }
 
-    const key = normalizeName(name);
+    const key =
+      normalizeName(name);
 
-    const existing = map.get(key);
+    const existing =
+      map.get(key);
 
     if (existing) {
-      existing.count += count;
+      existing.count +=
+        count;
     } else {
       map.set(key, {
         key,
@@ -321,7 +526,9 @@ function parseDecklist(text) {
     }
   }
 
-  return [...map.values()];
+  return [
+    ...map.values(),
+  ];
 }
 
 
@@ -330,22 +537,35 @@ function parseDecklist(text) {
    ============================================================ */
 
 async function lookupCard(inputName) {
-  const key = normalizeName(inputName);
+  const key =
+    normalizeName(inputName);
 
-  const cached = cache[key];
+  const cached =
+    cache[key];
 
+  /*
+   * The cache format changed to v2 because typeLine is now required
+   * for the land filter.
+   */
   if (
     cached &&
-    Date.now() - cached.fetchedAt < CACHE_MAX_AGE_MS
+    cached.value &&
+    Array.isArray(
+      cached.value.printings
+    ) &&
+    cached.value.printings.every(
+      (printing) =>
+        "typeLine" in printing
+    ) &&
+    Date.now() -
+      cached.fetchedAt <
+      CACHE_MAX_AGE_MS
   ) {
     return cached.value;
   }
 
-  /*
-   * !"<name>" = exact card-name match
-   * unique=prints = return individual printings
-   */
-  const query = `!"${inputName}"`;
+  const query =
+    `!"${inputName}"`;
 
   const searchUrl =
     `${API_BASE}/cards/search?` +
@@ -355,16 +575,18 @@ async function lookupCard(inputName) {
       order: "released",
     });
 
-  let cards = await fetchAllSearchPages(searchUrl);
+  let cards =
+    await fetchAllSearchPages(
+      searchUrl
+    );
 
   let fuzzy = false;
-  let resolvedName = inputName;
+  let resolvedName =
+    inputName;
 
   /*
-   * Exact lookup failed.
-   *
-   * Try Scryfall's fuzzy named endpoint. It gives us a canonical
-   * card object and a prints_search_uri for all of its printings.
+   * If the exact search failed, fall back to Scryfall's fuzzy
+   * named endpoint, then retrieve all of that card's printings.
    */
   if (cards.length === 0) {
     const namedUrl =
@@ -373,41 +595,52 @@ async function lookupCard(inputName) {
         fuzzy: inputName,
       });
 
-    const named = await fetchJson(namedUrl);
+    const named =
+      await fetchJson(
+        namedUrl
+      );
 
-    resolvedName = named.name;
+    resolvedName =
+      named.name;
+
     fuzzy = true;
 
-    if (!named.prints_search_uri) {
+    if (
+      !named.prints_search_uri
+    ) {
       cards = [named];
     } else {
-      cards = await fetchAllSearchPages(
-        named.prints_search_uri
-      );
+      cards =
+        await fetchAllSearchPages(
+          named.prints_search_uri
+        );
     }
   }
 
   /*
-   * We only care about physical cards.
-   *
-   * This filters out purely digital printings such as Arena/MTGO
-   * copies while leaving physical promo and supplemental sets
-   * available for the user's set filter.
+   * Only physical/paper cards are relevant for bulk storage.
    */
-  const printings = cards
-    .filter(
-      (card) =>
-        Array.isArray(card.games) &&
-        card.games.includes("paper")
-    )
-    .map(toPrinting)
-    .filter(
-      (printing) =>
-        printing.setCode &&
-        printing.setName
-    );
+  const printings =
+    cards
+      .filter(
+        (card) =>
+          Array.isArray(
+            card.games
+          ) &&
+          card.games.includes(
+            "paper"
+          )
+      )
+      .map(toPrinting)
+      .filter(
+        (printing) =>
+          printing.setCode &&
+          printing.setName
+      );
 
-  if (printings.length === 0) {
+  if (
+    printings.length === 0
+  ) {
     throw new Error(
       `Scryfall found no physical-paper printings for “${inputName}”.`
     );
@@ -430,20 +663,29 @@ async function lookupCard(inputName) {
 }
 
 
-async function fetchAllSearchPages(firstUrl) {
+async function fetchAllSearchPages(
+  firstUrl
+) {
   let url = firstUrl;
 
   const all = [];
   let safety = 0;
 
-  while (url && safety++ < 100) {
-    const data = await fetchJson(url);
+  while (
+    url &&
+    safety++ < 100
+  ) {
+    const data =
+      await fetchJson(url);
 
-    all.push(...(data.data || []));
+    all.push(
+      ...(data.data || [])
+    );
 
-    url = data.has_more
-      ? data.next_page
-      : null;
+    url =
+      data.has_more
+        ? data.next_page
+        : null;
   }
 
   return all;
@@ -453,43 +695,52 @@ async function fetchAllSearchPages(firstUrl) {
 async function fetchJson(url) {
   await waitForRateLimit();
 
-  let response = await fetch(url, {
-    headers: {
-      Accept: "application/json",
-    },
-  });
+  let response =
+    await fetch(url, {
+      headers: {
+        Accept:
+          "application/json",
+      },
+    });
 
-  /*
-   * Handle one 429 response rather than repeatedly hammering
-   * the API.
-   */
-  if (response.status === 429) {
+  if (
+    response.status === 429
+  ) {
     const retryAfter =
       Number.parseFloat(
-        response.headers.get("Retry-After")
+        response.headers.get(
+          "Retry-After"
+        )
       ) || 2;
 
     await sleep(
-      Math.max(1500, retryAfter * 1000)
+      Math.max(
+        1500,
+        retryAfter * 1000
+      )
     );
 
     await waitForRateLimit();
 
-    response = await fetch(url, {
-      headers: {
-        Accept: "application/json",
-      },
-    });
+    response =
+      await fetch(url, {
+        headers: {
+          Accept:
+            "application/json",
+        },
+      });
   }
 
   if (!response.ok) {
     let detail = "";
 
     try {
-      const body = await response.json();
+      const body =
+        await response.json();
 
       if (body.details) {
-        detail = ` ${body.details}`;
+        detail =
+          ` ${body.details}`;
       }
     } catch (_) {
       // Ignore malformed error bodies.
@@ -506,40 +757,65 @@ async function fetchJson(url) {
 
 async function waitForRateLimit() {
   const elapsed =
-    performance.now() - lastRequestAt;
+    performance.now() -
+    lastRequestAt;
 
-  if (elapsed < REQUEST_INTERVAL_MS) {
+  if (
+    elapsed <
+    REQUEST_INTERVAL_MS
+  ) {
     await sleep(
-      REQUEST_INTERVAL_MS - elapsed
+      REQUEST_INTERVAL_MS -
+        elapsed
     );
   }
 
-  lastRequestAt = performance.now();
+  lastRequestAt =
+    performance.now();
 }
 
 
 function toPrinting(card) {
   return {
-    setCode: card.set,
-    setName: card.set_name,
-    rarity: card.rarity,
+    // Capitalize set codes at the point they enter our data model.
+    setCode:
+      String(
+        card.set || ""
+      ).toUpperCase(),
+
+    setName:
+      card.set_name || "",
+
+    rarity:
+      card.rarity ||
+      "special",
+
+    typeLine:
+      card.type_line ||
+      "",
+
     releasedAt:
-      card.released_at || "9999-12-31",
+      card.released_at ||
+      "9999-12-31",
 
     image:
       getImageUri(card),
 
     scryfallUri:
       card.scryfall_uri ||
-      `https://scryfall.com/card/${card.set}/${card.collector_number}`,
+      `https://scryfall.com/card/${String(
+        card.set || ""
+      ).toLowerCase()}/${card.collector_number}`,
   };
 }
 
 
 function getImageUri(card) {
   return (
-    card.image_uris?.normal ||
-    card.card_faces?.[0]?.image_uris?.normal ||
+    card.image_uris
+      ?.normal ||
+    card.card_faces?.[0]
+      ?.image_uris?.normal ||
     null
   );
 }
@@ -552,23 +828,28 @@ function getImageUri(card) {
 function buildSetMetadata() {
   state.setMeta.clear();
 
-  for (const card of state.cards) {
-    const seen = new Set();
+  for (
+    const card of state.cards
+  ) {
+    for (
+      const printing of card.printings
+    ) {
+      const code =
+        printing.setCode.toUpperCase();
 
-    for (const printing of card.printings) {
-      if (seen.has(printing.setCode)) {
-        continue;
-      }
-
-      seen.add(printing.setCode);
-
-      if (!state.setMeta.has(printing.setCode)) {
+      if (
+        !state.setMeta.has(
+          code
+        )
+      ) {
         state.setMeta.set(
-          printing.setCode,
+          code,
           {
-            code: printing.setCode,
-            name: printing.setName,
-            releasedAt: printing.releasedAt,
+            code,
+            name:
+              printing.setName,
+            releasedAt:
+              printing.releasedAt,
           }
         );
       }
@@ -578,13 +859,69 @@ function buildSetMetadata() {
 
 
 function initializeUnknownSetsAsEnabled() {
-  for (const code of [...state.disabledSets]) {
-    if (!state.setMeta.has(code)) {
-      state.disabledSets.delete(code);
+  for (
+    const code of [
+      ...state.disabledSets,
+    ]
+  ) {
+    if (
+      !state.setMeta.has(code)
+    ) {
+      state.disabledSets.delete(
+        code
+      );
     }
   }
 
   saveSettings();
+}
+
+
+function isLandPrinting(
+  printing
+) {
+  return /\bLand\b/i.test(
+    printing.typeLine || ""
+  );
+}
+
+
+/*
+ * Tests filters other than the set itself.
+ */
+function passesNonSetFilters(
+  printing
+) {
+  if (
+    !state.enabledRarities.has(
+      printing.rarity
+    )
+  ) {
+    return false;
+  }
+
+  if (
+    state.ignoreLands &&
+    isLandPrinting(printing)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+
+function isPrintingAllowed(
+  printing
+) {
+  return (
+    !state.disabledSets.has(
+      printing.setCode.toUpperCase()
+    ) &&
+    passesNonSetFilters(
+      printing
+    )
+  );
 }
 
 
@@ -602,96 +939,157 @@ function recomputeResults() {
       'input[name="mode"]:checked'
     ).value;
 
-  const solution = solveForMode(mode);
+  const analysis =
+    solveForMode(mode);
 
-  if (!solution) {
-    summaryEl.innerHTML = `
-      <div class="empty-state error">
-        No solution exists with the currently enabled sets.
-        Enable at least one set containing each card.
-      </div>
-    `;
+  renderSummary(
+    analysis,
+    mode
+  );
 
-    resultsEl.innerHTML = "";
+  renderResults(
+    analysis,
+    mode
+  );
 
-    return;
-  }
-
-  renderSummary(solution, mode);
-  renderResults(solution, mode);
+  renderUnavailable(
+    analysis.unavailableIndexes
+  );
 }
 
 
 /*
- * Build the set-cover candidates.
+ * Determine which cards are still individually obtainable,
+ * then solve the set-cover problem only for those cards.
  *
- * Normal mode:
- *
- *     candidate = set
- *
- * Rarity mode:
- *
- *     candidate = set + rarity
- *
- * Each candidate has a BigInt bitmask indicating which deck
- * cards it can satisfy.
+ * This is the key change that allows us to return a useful
+ * partial solution when some cards have been filtered out entirely.
  */
 function solveForMode(mode) {
-  const universeSize = state.cards.length;
+  const candidates =
+    new Map();
 
-  const candidates = new Map();
+  const availableIndexes = [];
+  const unavailableIndexes = [];
 
   for (
     let cardIndex = 0;
-    cardIndex < state.cards.length;
+    cardIndex <
+      state.cards.length;
     cardIndex++
   ) {
-    const card = state.cards[cardIndex];
+    const card =
+      state.cards[
+        cardIndex
+      ];
 
-    const seenLocations = new Set();
+    let hasAllowedPrinting =
+      false;
 
-    for (const printing of card.printings) {
+    for (
+      const printing of card.printings
+    ) {
       if (
-        state.disabledSets.has(
-          printing.setCode
+        !isPrintingAllowed(
+          printing
         )
       ) {
         continue;
       }
 
+      hasAllowedPrinting =
+        true;
+
       const locationKey =
         mode === "sets"
-          ? printing.setCode
-          : `${printing.setCode}|${printing.rarity}`;
+          ? printing.setCode.toUpperCase()
+          : `${printing.setCode.toUpperCase()}|${printing.rarity}`;
 
-      if (seenLocations.has(locationKey)) {
-        continue;
-      }
-
-      seenLocations.add(locationKey);
-
-      if (!candidates.has(locationKey)) {
+      if (
+        !candidates.has(
+          locationKey
+        )
+      ) {
         candidates.set(
           locationKey,
           {
             key: locationKey,
-            setCode: printing.setCode,
-            setName: printing.setName,
+
+            setCode:
+              printing.setCode.toUpperCase(),
+
+            setName:
+              printing.setName,
 
             rarity:
               mode === "sets"
                 ? null
                 : printing.rarity,
 
-            releasedAt: printing.releasedAt,
+            releasedAt:
+              printing.releasedAt,
 
+            cardIndexes: [],
             mask: 0n,
           }
         );
       }
 
-      candidates.get(locationKey).mask |=
-        1n << BigInt(cardIndex);
+      candidates
+        .get(locationKey)
+        .cardIndexes.push(
+          cardIndex
+        );
+    }
+
+    if (
+      hasAllowedPrinting
+    ) {
+      availableIndexes.push(
+        cardIndex
+      );
+    } else {
+      unavailableIndexes.push(
+        cardIndex
+      );
+    }
+  }
+
+  /*
+   * Create local bit positions for only the cards that can
+   * currently be obtained.
+   */
+  const localIndexByCardIndex =
+    new Map(
+      availableIndexes.map(
+        (
+          cardIndex,
+          localIndex
+        ) => [
+          cardIndex,
+          localIndex,
+        ]
+      )
+    );
+
+  for (
+    const candidate of
+      candidates.values()
+  ) {
+    for (
+      const cardIndex of
+        candidate.cardIndexes
+    ) {
+      const localIndex =
+        localIndexByCardIndex.get(
+          cardIndex
+        );
+
+      candidate.mask |=
+        1n <<
+        BigInt(
+          localIndex
+        );
     }
   }
 
@@ -700,33 +1098,55 @@ function solveForMode(mode) {
       [...candidates.values()]
     );
 
-  return solveSetCover(
-    candidateList,
-    universeSize
-  );
+  const solution =
+    solveSetCover(
+      candidateList,
+      availableIndexes.length
+    );
+
+  return {
+    mode,
+    candidates:
+      candidateList,
+
+    availableIndexes,
+    unavailableIndexes,
+
+    solution,
+  };
 }
 
 
 /*
- * If two sets cover exactly the same deck cards, keep only one.
+ * If two locations cover the exact same set of deck cards,
+ * only one is necessary.
  *
  * Then remove dominated candidates:
  *
- *   If Set A covers a subset of Set B,
- *   checking Set A can never be better than
- *   checking Set B because both cost one location.
+ *     A is a subset of B
+ *
+ * Since both locations cost one box to check, A is never
+ * strictly better than B for this optimization.
  */
-function dedupeAndReduceCandidates(candidates) {
+function dedupeAndReduceCandidates(
+  candidates
+) {
   const byMask = new Map();
 
-  for (const candidate of candidates) {
-    if (candidate.mask === 0n) {
+  for (
+    const candidate of candidates
+  ) {
+    if (
+      candidate.mask === 0n
+    ) {
       continue;
     }
 
-    const key = candidate.mask.toString();
+    const key =
+      candidate.mask.toString();
 
-    const existing = byMask.get(key);
+    const existing =
+      byMask.get(key);
 
     if (
       !existing ||
@@ -735,23 +1155,30 @@ function dedupeAndReduceCandidates(candidates) {
         existing
       ) < 0
     ) {
-      byMask.set(key, candidate);
+      byMask.set(
+        key,
+        candidate
+      );
     }
   }
 
   const deduped =
-    [...byMask.values()].sort(
-      (a, b) => {
-        const diff =
-          popcount(b.mask) -
-          popcount(a.mask);
+    [...byMask.values()]
+      .sort(
+        (a, b) => {
+          const diff =
+            popcount(b.mask) -
+            popcount(a.mask);
 
-        return (
-          diff ||
-          compareCandidates(a, b)
-        );
-      }
-    );
+          return (
+            diff ||
+            compareCandidates(
+              a,
+              b
+            )
+          );
+        }
+      );
 
   const reduced = [];
 
@@ -781,14 +1208,19 @@ function dedupeAndReduceCandidates(candidates) {
       }
     }
 
-    reduced.push(candidate);
+    reduced.push(
+      candidate
+    );
   }
 
   return reduced;
 }
 
 
-function compareCandidates(a, b) {
+function compareCandidates(
+  a,
+  b
+) {
   const date =
     a.releasedAt.localeCompare(
       b.releasedAt
@@ -807,25 +1239,24 @@ function compareCandidates(a, b) {
     return name;
   }
 
-  return a.key.localeCompare(b.key);
+  return a.key.localeCompare(
+    b.key
+  );
 }
 
 
 /*
- * Exact minimum set cover using branch and bound.
+ * Exact minimum set cover using branch-and-bound.
  *
- * BigInt is used for the bitset so the deck can contain well
- * over 32 unique cards.
+ * BigInt bitmasks allow decks much larger than 32 cards.
  */
 function solveSetCover(
   candidates,
   universeSize
 ) {
-  const fullMask =
-    (1n << BigInt(universeSize)) -
-    1n;
-
-  if (universeSize === 0) {
+  if (
+    universeSize === 0
+  ) {
     return {
       selected: [],
       candidates,
@@ -834,14 +1265,21 @@ function solveSetCover(
     };
   }
 
+  const fullMask =
+    (1n <<
+      BigInt(
+        universeSize
+      )) -
+    1n;
+
   /*
-   * For each card, keep a list of candidate locations
-   * that contain it.
+   * For each card, track which candidates contain it.
    */
   const covering =
     Array.from(
       {
-        length: universeSize,
+        length:
+          universeSize,
       },
       () => []
     );
@@ -861,25 +1299,31 @@ function solveSetCover(
       const bitIndex =
         bigIntLog2(lsb);
 
-      covering[bitIndex].push(ci);
+      covering[
+        bitIndex
+      ].push(ci);
 
       mask ^= lsb;
     }
   }
 
   /*
-   * If any card has no candidate set, the problem is impossible.
+   * This should not normally happen because solveForMode
+   * already identifies unavailable cards, but keep the solver
+   * defensive.
    */
-  for (const options of covering) {
-    if (options.length === 0) {
+  for (
+    const options of covering
+  ) {
+    if (
+      options.length === 0
+    ) {
       return null;
     }
   }
 
   /*
-   * Start with a greedy solution.
-   *
-   * This gives branch-and-bound an upper bound immediately.
+   * Start with a greedy solution to establish an upper bound.
    */
   const greedy =
     greedyCover(
@@ -910,12 +1354,16 @@ function solveSetCover(
       return;
     }
 
-    if (covered === fullMask) {
+    if (
+      covered === fullMask
+    ) {
       if (
         chosen.length <
         best.length
       ) {
-        best = [...chosen];
+        best = [
+          ...chosen,
+        ];
       }
 
       return;
@@ -930,38 +1378,38 @@ function solveSetCover(
 
     const uncovered =
       fullMask ^
-      (fullMask & covered);
+      (fullMask &
+        covered);
 
     const uncoveredCount =
-      popcount(uncovered);
+      popcount(
+        uncovered
+      );
 
-    /*
-     * Choose the uncovered card having the fewest
-     * remaining candidate locations.
-     *
-     * This is the most useful branching heuristic here.
-     */
-    let targetCard = -1;
-    let targetOptions = null;
+    let targetOptions =
+      null;
 
-    /*
-     * Maximum number of currently uncovered cards that
-     * any candidate can cover.
-     *
-     * Used for a lower-bound pruning calculation.
-     */
     let maxGain = 0;
 
+    /*
+     * Pick an uncovered card with the fewest ways of
+     * satisfying it. This usually shrinks the search tree.
+     */
     for (
       let cardIndex = 0;
-      cardIndex < universeSize;
+      cardIndex <
+        universeSize;
       cardIndex++
     ) {
       const bit =
-        1n << BigInt(cardIndex);
+        1n <<
+        BigInt(
+          cardIndex
+        );
 
       if (
-        (covered & bit) !== 0n
+        (covered & bit) !==
+        0n
       ) {
         continue;
       }
@@ -970,42 +1418,58 @@ function solveSetCover(
 
       for (
         const ci of
-        covering[cardIndex]
+          covering[
+            cardIndex
+          ]
       ) {
         const gainMask =
-          candidates[ci].mask &
+          candidates[ci]
+            .mask &
           uncovered;
 
-        if (gainMask !== 0n) {
-          options.push(ci);
+        if (
+          gainMask !==
+          0n
+        ) {
+          options.push(
+            ci
+          );
         }
 
         const gain =
-          popcount(gainMask);
+          popcount(
+            gainMask
+          );
 
-        if (gain > maxGain) {
-          maxGain = gain;
+        if (
+          gain > maxGain
+        ) {
+          maxGain =
+            gain;
         }
       }
 
-      if (options.length === 0) {
+      if (
+        options.length ===
+        0
+      ) {
         return;
       }
 
       if (
-        targetOptions === null ||
+        targetOptions ===
+          null ||
         options.length <
           targetOptions.length
       ) {
-        targetCard = cardIndex;
-        targetOptions = options;
+        targetOptions =
+          options;
       }
     }
 
     if (
-      maxGain === 0 ||
-      targetCard < 0 ||
-      targetOptions === null
+      !targetOptions ||
+      maxGain === 0
     ) {
       return;
     }
@@ -1013,9 +1477,9 @@ function solveSetCover(
     /*
      * Lower bound:
      *
-     * If the best candidate covers 6 remaining cards
-     * and 20 remain, at least ceil(20/6) = 4 additional
-     * locations are required.
+     * If at most 5 cards can be gained per box and
+     * 17 cards remain, at least ceil(17/5) = 4 more
+     * boxes are necessary.
      */
     const lowerBound =
       Math.ceil(
@@ -1031,21 +1495,19 @@ function solveSetCover(
       return;
     }
 
-    /*
-     * Try the candidate locations that cover the selected
-     * card, largest gain first.
-     */
     targetOptions.sort(
       (a, b) => {
         const gainA =
           popcount(
-            candidates[a].mask &
+            candidates[a]
+              .mask &
               uncovered
           );
 
         const gainB =
           popcount(
-            candidates[b].mask &
+            candidates[b]
+              .mask &
               uncovered
           );
 
@@ -1060,12 +1522,18 @@ function solveSetCover(
     );
 
     for (
-      const ci of targetOptions
+      const ci of
+        targetOptions
     ) {
       dfs(
         covered |
-          candidates[ci].mask,
-        [...chosen, ci]
+          candidates[ci]
+            .mask,
+
+        [
+          ...chosen,
+          ci,
+        ]
       );
 
       if (timedOut) {
@@ -1074,12 +1542,16 @@ function solveSetCover(
     }
   }
 
-  dfs(0n, []);
+  dfs(
+    0n,
+    []
+  );
 
   return {
     selected: best,
     candidates,
-    optimal: !timedOut,
+    optimal:
+      !timedOut,
     timeMs:
       Math.round(
         performance.now() -
@@ -1090,10 +1562,7 @@ function solveSetCover(
 
 
 /*
- * Greedy upper-bound solution:
- *
- * Repeatedly choose the set that covers the largest number
- * of currently uncovered cards.
+ * Greedy upper-bound solution.
  */
 function greedyCover(
   candidates,
@@ -1121,26 +1590,38 @@ function greedyCover(
 
       const gain =
         popcount(
-          candidates[i].mask &
+          candidates[i]
+            .mask &
             (fullMask ^
               (fullMask &
                 covered))
         );
 
-      if (gain > bestGain) {
-        bestGain = gain;
-        bestIndex = i;
+      if (
+        gain > bestGain
+      ) {
+        bestGain =
+          gain;
+
+        bestIndex =
+          i;
       }
     }
 
-    if (bestIndex < 0) {
+    if (
+      bestIndex < 0
+    ) {
       return null;
     }
 
-    selected.push(bestIndex);
+    selected.push(
+      bestIndex
+    );
 
     covered |=
-      candidates[bestIndex].mask;
+      candidates[
+        bestIndex
+      ].mask;
   }
 
   return selected;
@@ -1152,14 +1633,52 @@ function greedyCover(
    ============================================================ */
 
 function renderSummary(
-  solution,
+  analysis,
   mode
 ) {
+  const solution =
+    analysis.solution;
+
+  const unavailableCount =
+    analysis
+      .unavailableIndexes
+      .length;
+
+  const totalCopies =
+    state.cards.reduce(
+      (sum, card) =>
+        sum + card.count,
+      0
+    );
+
+  /*
+   * All cards may have become unavailable due to the active filters.
+   */
+  if (!solution) {
+    summaryEl.innerHTML = `
+      <div class="summary-stat">
+        <strong>0 sets to check</strong>
+
+        <span>
+          ${unavailableCount} of ${state.cards.length}
+          unique cards are unavailable with the current filters.
+        </span>
+      </div>
+
+      <div class="solver-note">
+        No searchable card has an enabled printing.
+      </div>
+    `;
+
+    return;
+  }
+
   const setCount =
     new Set(
       solution.selected.map(
         (i) =>
-          solution.candidates[i]
+          solution
+            .candidates[i]
             .setCode
       )
     ).size;
@@ -1167,15 +1686,15 @@ function renderSummary(
   const locations =
     solution.selected.length;
 
-  const totalCards =
-    state.cards.reduce(
-      (sum, card) =>
-        sum + card.count,
+  const availableCopies =
+    analysis.availableIndexes.reduce(
+      (sum, cardIndex) =>
+        sum +
+        state.cards[
+          cardIndex
+        ].count,
       0
     );
-
-  const uniqueCards =
-    state.cards.length;
 
   const primary =
     mode === "sets"
@@ -1194,59 +1713,102 @@ function renderSummary(
             : "s"
         }`;
 
-  const proof =
+  let proof;
+
+  if (
     solution.optimal
-      ? `Minimum proven by the exact solver (${solution.timeMs} ms).`
-      : `Best solution found within the ${
-          SOLVER_TIME_LIMIT_MS / 1000
-        }-second solver limit; minimum not proven.`;
+  ) {
+    proof =
+      `Minimum proven by the exact solver (${solution.timeMs} ms).`;
+  } else {
+    proof =
+      `Best solution found within the ${
+        SOLVER_TIME_LIMIT_MS / 1000
+      }-second solver limit; minimum not proven.`;
+  }
+
+  if (
+    unavailableCount > 0
+  ) {
+    proof +=
+      ` ${unavailableCount} unique card${
+        unavailableCount === 1
+          ? " is"
+          : "s are"
+      } unavailable under the current filters.`;
+  }
 
   summaryEl.innerHTML = `
     <div class="summary-stat">
       <strong>${primary}</strong>
+
       <span>
-        ${uniqueCards} unique cards ·
-        ${totalCards} total copies
+        ${analysis.availableIndexes.length}
+        searchable unique card${
+          analysis.availableIndexes.length === 1
+            ? ""
+            : "s"
+        }
+        ·
+        ${availableCopies}
+        searchable copies
+        ·
+        ${totalCopies}
+        total deck copies
       </span>
     </div>
 
     <div class="solver-note">
-      ${proof}
+      ${escapeHtml(proof)}
     </div>
   `;
 }
 
 
 function renderResults(
-  solution,
+  analysis,
   mode
 ) {
-  /*
-   * The selected sets may overlap. Assign each card to one
-   * of the selected locations so every card appears exactly
-   * once in the output.
-   */
-  const assignment = new Map();
+  const solution =
+    analysis.solution;
+
+  resultsEl.innerHTML = "";
+
+  if (!solution) {
+    resultsEl.innerHTML = `
+      <div class="empty-state">
+        No cards remain searchable with the current filters.
+        The excluded cards are listed below.
+      </div>
+    `;
+
+    return;
+  }
 
   const selected =
     solution.selected.map(
       (index) =>
-        solution.candidates[index]
+        solution
+          .candidates[index]
     );
 
-  for (
-    let cardIndex = 0;
-    cardIndex < state.cards.length;
-    cardIndex++
-  ) {
-    const bit =
-      1n << BigInt(cardIndex);
+  /*
+   * Every searchable card is assigned to one selected location
+   * for the purposes of the displayed shopping/collection list.
+   */
+  const assignment =
+    new Map();
 
+  for (
+    const cardIndex of
+      analysis.availableIndexes
+  ) {
     const location =
       selected.find(
         (candidate) =>
-          (candidate.mask &
-            bit) !== 0n
+          candidate.cardIndexes.includes(
+            cardIndex
+          )
       );
 
     if (location) {
@@ -1257,9 +1819,12 @@ function renderResults(
     }
   }
 
-  const groups = new Map();
+  const groups =
+    new Map();
 
-  for (const location of selected) {
+  for (
+    const location of selected
+  ) {
     groups.set(
       location.key,
       {
@@ -1285,7 +1850,9 @@ function renderResults(
   const groupList =
     [...groups.values()];
 
-  if (mode === "sets") {
+  if (
+    mode === "sets"
+  ) {
     groupList.sort(
       (a, b) =>
         compareCandidates(
@@ -1315,25 +1882,30 @@ function renderResults(
     );
   }
 
-  resultsEl.innerHTML = "";
-
   for (
-    let i = 0;
-    i < groupList.length;
-    i++
+    const group of groupList
   ) {
     const {
       location,
       cardIndexes,
-    } = groupList[i];
+    } = group;
 
     const section =
       document.createElement(
         "section"
       );
 
+    const checked =
+      state.checkedLocations.has(
+        location.key
+      );
+
     section.className =
-      "result-set";
+      `result-set${
+        checked
+          ? " collected"
+          : ""
+      }`;
 
     const heading =
       document.createElement(
@@ -1343,41 +1915,134 @@ function renderResults(
     heading.className =
       "result-heading";
 
-    heading.innerHTML = `
-      <div>
-        <h3>
+    const title =
+      document.createElement(
+        "div"
+      );
+
+    title.innerHTML = `
+      <h3>
+        ${escapeHtml(
+          location.setName
+        )}
+
+        <code>
           ${escapeHtml(
-            location.setName
+            location.setCode.toUpperCase()
           )}
-          <code>
-            ${escapeHtml(
-              location.setCode
-            )}
-          </code>
-        </h3>
+        </code>
+      </h3>
 
-        ${
-          mode === "sets"
-            ? ""
-            : `
-              <span class="rarity-label">
-                ${prettyRarity(
-                  location.rarity
-                )}
-              </span>
-            `
-        }
-      </div>
-
-      <span>
-        ${cardIndexes.length}
-        unique card${
-          cardIndexes.length === 1
-            ? ""
-            : "s"
-        }
-      </span>
+      ${
+        mode === "sets"
+          ? ""
+          : `
+            <span class="rarity-label">
+              ${prettyRarity(
+                location.rarity
+              )}
+            </span>
+          `
+      }
     `;
+
+    const right =
+      document.createElement(
+        "div"
+      );
+
+    right.className =
+      "result-meta";
+
+    if (
+      state.checklistEnabled
+    ) {
+      const checklistLabel =
+        document.createElement(
+          "label"
+        );
+
+      checklistLabel.className =
+        "checklist-control";
+
+      const checkbox =
+        document.createElement(
+          "input"
+        );
+
+      checkbox.type =
+        "checkbox";
+
+      checkbox.checked =
+        checked;
+
+      checkbox.setAttribute(
+        "aria-label",
+        `Mark ${location.setName} as collected`
+      );
+
+      checkbox.addEventListener(
+        "change",
+        () => {
+          if (
+            checkbox.checked
+          ) {
+            state.checkedLocations.add(
+              location.key
+            );
+          } else {
+            state.checkedLocations.delete(
+              location.key
+            );
+          }
+
+          renderResults(
+            analysis,
+            mode
+          );
+        }
+      );
+
+      const labelText =
+        document.createElement(
+          "span"
+        );
+
+      labelText.textContent =
+        checked
+          ? "Collected"
+          : "Check off";
+
+      checklistLabel.append(
+        checkbox,
+        labelText
+      );
+
+      right.appendChild(
+        checklistLabel
+      );
+    }
+
+    const count =
+      document.createElement(
+        "span"
+      );
+
+    count.textContent =
+      `${cardIndexes.length} unique card${
+        cardIndexes.length === 1
+          ? ""
+          : "s"
+      }`;
+
+    right.appendChild(
+      count
+    );
+
+    heading.append(
+      title,
+      right
+    );
 
     const list =
       document.createElement(
@@ -1389,18 +2054,22 @@ function renderResults(
 
     cardIndexes.sort(
       (a, b) =>
-        state.cards[a].name
-          .localeCompare(
-            state.cards[b].name
+        state.cards[a]
+          .name.localeCompare(
+            state.cards[b]
+              .name
           )
     );
 
     for (
-      const cardIndex of cardIndexes
+      const cardIndex of
+        cardIndexes
     ) {
       list.appendChild(
         createCardChip(
-          state.cards[cardIndex]
+          state.cards[
+            cardIndex
+          ]
         )
       );
     }
@@ -1417,26 +2086,132 @@ function renderResults(
 }
 
 
+function renderUnavailable(
+  unavailableIndexes
+) {
+  unavailablePanel.hidden =
+    unavailableIndexes.length ===
+    0;
+
+  unavailableEl.innerHTML =
+    "";
+
+  if (
+    unavailableIndexes.length ===
+    0
+  ) {
+    return;
+  }
+
+  for (
+    const cardIndex of
+      unavailableIndexes
+  ) {
+    const card =
+      state.cards[
+        cardIndex
+      ];
+
+    const row =
+      document.createElement(
+        "div"
+      );
+
+    row.className =
+      "unavailable-card-row";
+
+    row.appendChild(
+      createCardChip(
+        card,
+        "unavailable-chip"
+      )
+    );
+
+    const reason =
+      document.createElement(
+        "span"
+      );
+
+    reason.textContent =
+      getUnavailableReason(
+        card
+      );
+
+    row.appendChild(
+      reason
+    );
+
+    unavailableEl.appendChild(
+      row
+    );
+  }
+}
+
+
 /*
- * Card result chip.
- *
- * Hover/focus:
- *   - shows Scryfall card image
- *   - lists every paper set
- *   - marks disabled sets as ignored
+ * Explain the most useful reason for a card becoming unavailable.
  */
-function createCardChip(card) {
+function getUnavailableReason(
+  card
+) {
+  const hasSetMatch =
+    card.printings.some(
+      (printing) =>
+        passesNonSetFilters(
+          printing
+        )
+    );
+
+  if (!hasSetMatch) {
+    if (
+      state.ignoreLands &&
+      card.printings.every(
+        (printing) =>
+          isLandPrinting(
+            printing
+          )
+      )
+    ) {
+      return "Excluded because lands are being ignored.";
+    }
+
+    if (
+      state.enabledRarities.size ===
+      0
+    ) {
+      return "Excluded because every rarity is toggled off.";
+    }
+
+    return "No printing matches the enabled rarity and land filters.";
+  }
+
+  return "All matching printings are in sets that are currently disabled.";
+}
+
+
+/*
+ * Create a hoverable card chip.
+ *
+ * The tooltip shows every paper set for that card, not only
+ * sets that are currently enabled.
+ */
+function createCardChip(
+  card,
+  extraClass = ""
+) {
   const button =
     document.createElement(
       "button"
     );
 
-  button.type = "button";
+  button.type =
+    "button";
+
   button.className =
-    "card-chip";
+    `card-chip ${extraClass}`.trim();
 
   button.title =
-    "Hover or focus for all printings";
+    "Hover or focus for all paper printings";
 
   const label =
     document.createElement(
@@ -1471,9 +2246,13 @@ function createCardChip(card) {
     img.src = image;
     img.alt =
       `${card.name} card image`;
-    img.loading = "lazy";
 
-    tooltip.appendChild(img);
+    img.loading =
+      "lazy";
+
+    tooltip.appendChild(
+      img
+    );
   }
 
   const details =
@@ -1498,19 +2277,19 @@ function createCardChip(card) {
     title
   );
 
-  const setsTitle =
+  const subtitle =
     document.createElement(
       "span"
     );
 
-  setsTitle.className =
+  subtitle.className =
     "tooltip-subtitle";
 
-  setsTitle.textContent =
-    "Printings in paper sets:";
+  subtitle.textContent =
+    "Paper sets:";
 
   details.appendChild(
-    setsTitle
+    subtitle
   );
 
   const setsList =
@@ -1521,7 +2300,12 @@ function createCardChip(card) {
   setsList.className =
     "tooltip-sets";
 
-  const seen = new Set();
+  /*
+   * Show each set once, combining the rarities in which the
+   * card appears in that set.
+   */
+  const setRows =
+    new Map();
 
   const sortedPrintings =
     [...card.printings].sort(
@@ -1531,42 +2315,90 @@ function createCardChip(card) {
         ) ||
         a.setName.localeCompare(
           b.setName
+        ) ||
+        a.rarity.localeCompare(
+          b.rarity
         )
     );
 
   for (
-    const printing of sortedPrintings
+    const printing of
+      sortedPrintings
   ) {
+    const code =
+      printing.setCode.toUpperCase();
+
     if (
-      seen.has(
-        printing.setCode
-      )
+      !setRows.has(code)
     ) {
-      continue;
+      setRows.set(
+        code,
+        {
+          setName:
+            printing.setName,
+
+          code,
+
+          rarities:
+            new Set(),
+
+          anyAllowed:
+            false,
+        }
+      );
     }
 
-    seen.add(
-      printing.setCode
+    const row =
+      setRows.get(code);
+
+    row.rarities.add(
+      printing.rarity
     );
 
+    if (
+      isPrintingAllowed(
+        printing
+      )
+    ) {
+      row.anyAllowed =
+        true;
+    }
+  }
+
+  for (
+    const rowData of
+      setRows.values()
+  ) {
     const row =
       document.createElement(
         "span"
       );
 
-    const ignored =
-      state.disabledSets.has(
-        printing.setCode
-      );
-
     row.className =
-      ignored ? "ignored" : "";
+      rowData.anyAllowed
+        ? ""
+        : "ignored";
+
+    const rarityText =
+      [
+        ...rowData.rarities,
+      ]
+        .sort(
+          (a, b) =>
+            rarityRank(a) -
+              rarityRank(b) ||
+            a.localeCompare(b)
+        )
+        .map(prettyRarity)
+        .join(", ");
+
+    const suffix =
+      rowData.anyAllowed
+        ? ""
+        : " — ignored";
 
     row.textContent =
-      `${printing.setName} (${printing.setCode})` +
-      (ignored
-        ? " — ignored"
-        : "");
+      `${rowData.setName} (${rowData.code}) · ${rarityText}${suffix}`;
 
     setsList.appendChild(
       row
@@ -1590,13 +2422,14 @@ function createCardChip(card) {
 }
 
 
-function getBestImage(printings) {
+function getBestImage(
+  printings
+) {
   return (
     printings.find(
       (printing) =>
         printing.image
-    )?.image ||
-    null
+    )?.image || null
   );
 }
 
@@ -1611,22 +2444,31 @@ function renderSetFilters() {
       setFilterEl.value
     );
 
-  setListEl.innerHTML = "";
+  setListEl.innerHTML =
+    "";
 
   const entries =
     [...state.setMeta.values()]
-      .filter((set) => {
-        if (!filter) {
-          return true;
-        }
+      .filter(
+        (set) => {
+          if (!filter) {
+            return true;
+          }
 
-        return (
-          normalizeName(
-            set.name
-          ).includes(filter) ||
-          set.code.includes(filter)
-        );
-      })
+          return (
+            normalizeName(
+              set.name
+            ).includes(
+              filter
+            ) ||
+            set.code
+              .toLowerCase()
+              .includes(
+                filter
+              )
+          );
+        }
+      )
       .sort(
         (a, b) =>
           a.name.localeCompare(
@@ -1634,7 +2476,9 @@ function renderSetFilters() {
           )
       );
 
-  for (const set of entries) {
+  for (
+    const set of entries
+  ) {
     const label =
       document.createElement(
         "label"
@@ -1657,7 +2501,7 @@ function renderSetFilters() {
       );
 
     checkbox.dataset.setCode =
-      set.code;
+      set.code.toUpperCase();
 
     const coverage =
       countSetCoverage(
@@ -1678,7 +2522,7 @@ function renderSetFilters() {
 
       <code>
         ${escapeHtml(
-          set.code
+          set.code.toUpperCase()
         )}
       </code>
 
@@ -1687,7 +2531,7 @@ function renderSetFilters() {
           coverage === 1
             ? ""
             : "s"
-        }
+        } after rarity/land filters
       </small>
     `;
 
@@ -1701,24 +2545,44 @@ function renderSetFilters() {
     );
   }
 
-  if (entries.length === 0) {
+  if (
+    entries.length === 0
+  ) {
     setListEl.innerHTML =
-      `<div class="empty-state">
-        No matching sets.
-      </div>`;
+      `
+        <div class="empty-state">
+          No matching sets.
+        </div>
+      `;
   }
 }
 
 
-function countSetCoverage(setCode) {
+/*
+ * Show how many cards a set could currently cover,
+ * ignoring whether that particular set is itself disabled.
+ *
+ * This makes the number useful when deciding whether to re-enable it.
+ */
+function countSetCoverage(
+  setCode
+) {
   let count = 0;
 
-  for (const card of state.cards) {
+  const normalizedCode =
+    setCode.toUpperCase();
+
+  for (
+    const card of state.cards
+  ) {
     if (
       card.printings.some(
         (printing) =>
-          printing.setCode ===
-          setCode
+          printing.setCode.toUpperCase() ===
+            normalizedCode &&
+          passesNonSetFilters(
+            printing
+          )
       )
     ) {
       count++;
@@ -1733,14 +2597,21 @@ function countSetCoverage(setCode) {
    Missing card UI
    ============================================================ */
 
-function renderMissing(missing) {
-  missingEl.innerHTML = "";
+function renderMissing(
+  missing
+) {
+  missingEl.innerHTML =
+    "";
 
-  if (missing.length === 0) {
+  if (
+    missing.length === 0
+  ) {
     return;
   }
 
-  for (const card of missing) {
+  for (
+    const card of missing
+  ) {
     const row =
       document.createElement(
         "div"
@@ -1788,43 +2659,58 @@ function setStatus(
 }
 
 
-function normalizeName(name) {
+function normalizeName(
+  name
+) {
   return name
     .toLowerCase()
     .trim()
-    .replace(/\s+/g, " ");
+    .replace(
+      /\s+/g,
+      " "
+    );
 }
 
 
-function prettyRarity(rarity) {
+function prettyRarity(
+  rarity
+) {
   return (
-    rarity.charAt(0).toUpperCase() +
+    rarity.charAt(0)
+      .toUpperCase() +
     rarity.slice(1)
   );
 }
 
 
-function rarityRank(rarity) {
+function rarityRank(
+  rarity
+) {
   const order = [
     "common",
     "uncommon",
     "rare",
     "mythic",
-    "land",
-    "bonus",
     "special",
+    "bonus",
   ];
 
   const index =
-    order.indexOf(rarity);
+    order.indexOf(
+      rarity
+    );
 
-  return index >= 0
-    ? index + 1
-    : 99;
+  return (
+    index >= 0
+      ? index + 1
+      : 99
+  );
 }
 
 
-function escapeHtml(value) {
+function escapeHtml(
+  value
+) {
   return String(value)
     .replaceAll(
       "&",
@@ -1849,14 +2735,15 @@ function escapeHtml(value) {
 }
 
 
-/*
- * Count 1 bits in a BigInt.
- */
-function popcount(value) {
+function popcount(
+  value
+) {
   let count = 0;
 
   while (value) {
-    value &= value - 1n;
+    value &=
+      value - 1n;
+
     count++;
   }
 
@@ -1864,17 +2751,20 @@ function popcount(value) {
 }
 
 
-/*
- * BigInt equivalent of log2(value), where value is a power of two.
- */
-function bigIntLog2(value) {
+function bigIntLog2(
+  value
+) {
   return (
-    value.toString(2).length - 1
+    value.toString(
+      2
+    ).length - 1
   );
 }
 
 
-function sleep(ms) {
+function sleep(
+  ms
+) {
   return new Promise(
     (resolve) =>
       setTimeout(
@@ -1906,13 +2796,12 @@ function saveCache() {
   try {
     localStorage.setItem(
       CACHE_KEY,
-      JSON.stringify(cache)
+      JSON.stringify(
+        cache
+      )
     );
   } catch (_) {
-    /*
-     * Storage can be unavailable or full.
-     * The application still works without caching.
-     */
+    // Ignore unavailable/full localStorage.
   }
 }
 
@@ -1928,11 +2817,74 @@ function loadSettings() {
 
     state.disabledSets =
       new Set(
-        value.disabledSets || []
+        (
+          value.disabledSets ||
+          []
+        ).map(
+          (code) =>
+            String(
+              code
+            ).toUpperCase()
+        )
+      );
+
+    const savedRarities =
+      Array.isArray(
+        value.enabledRarities
+      )
+        ? value
+            .enabledRarities
+            .map(
+              (rarity) =>
+                String(
+                  rarity
+                ).toLowerCase()
+            )
+            .filter(
+              (rarity) =>
+                RARITIES.some(
+                  (entry) =>
+                    entry.value ===
+                    rarity
+                )
+            )
+        : null;
+
+    state.enabledRarities =
+      new Set(
+        savedRarities ??
+          RARITIES.map(
+            (rarity) =>
+              rarity.value
+          )
+      );
+
+    state.ignoreLands =
+      Boolean(
+        value.ignoreLands
+      );
+
+    state.checklistEnabled =
+      Boolean(
+        value.checklistEnabled
       );
   } catch (_) {
     state.disabledSets =
       new Set();
+
+    state.enabledRarities =
+      new Set(
+        RARITIES.map(
+          (rarity) =>
+            rarity.value
+        )
+      );
+
+    state.ignoreLands =
+      false;
+
+    state.checklistEnabled =
+      false;
   }
 }
 
@@ -1944,7 +2896,20 @@ function saveSettings() {
       JSON.stringify({
         disabledSets: [
           ...state.disabledSets,
+        ].map(
+          (code) =>
+            code.toUpperCase()
+        ),
+
+        enabledRarities: [
+          ...state.enabledRarities,
         ],
+
+        ignoreLands:
+          state.ignoreLands,
+
+        checklistEnabled:
+          state.checklistEnabled,
       })
     );
   } catch (_) {
