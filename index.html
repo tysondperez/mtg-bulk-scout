@@ -11,14 +11,23 @@
   <link rel="stylesheet" href="styles.css">
   <script src="app.js" defer></script>
 </head>
+
 <body>
   <main class="app">
-    <header>
-      <h1>MTG Bulk Box Scout</h1>
-      <p>
-        Paste a decklist and the site will use Scryfall print data
-        to find a small set of storage boxes to check.
-      </p>
+
+    <header class="site-header">
+      <div>
+        <h1>MTG Bulk Box Scout</h1>
+        <p>
+          Paste a decklist and the site will use Scryfall print data
+          to find a small set of storage boxes to check.
+        </p>
+      </div>
+
+      <label class="theme-toggle">
+        <input type="checkbox" id="darkModeToggle">
+        <span>Dark mode</span>
+      </label>
     </header>
 
     <section class="panel">
@@ -74,6 +83,7 @@
       </div>
 
       <div class="filter-grid">
+
         <fieldset class="filter-group">
           <legend>Card filters</legend>
 
@@ -84,12 +94,12 @@
 
           <label class="toggle-option">
             <input type="checkbox" id="checklistToggle">
-            Turn result sets into a collection checklist
+            Enable collection checklist
           </label>
 
           <div class="filter-help">
-            Rarity filters apply to possible printings. A card remains
-            searchable when it has at least one enabled-rarity printing.
+            In checklist mode, both whole storage locations and
+            individual cards can be checked off as collected.
           </div>
         </fieldset>
 
@@ -97,6 +107,7 @@
           <legend>Enabled rarities</legend>
 
           <div class="rarity-list">
+
             <label class="toggle-option">
               <input
                 class="rarity-toggle"
@@ -156,8 +167,15 @@
               >
               Bonus
             </label>
+
+          </div>
+
+          <div class="filter-help">
+            A card remains searchable when it has at least one
+            printing matching an enabled rarity.
           </div>
         </fieldset>
+
       </div>
 
       <div class="set-filter-heading">
@@ -176,6 +194,15 @@
           <button id="disableAll" class="secondary" type="button">
             Disable all
           </button>
+
+          <button
+            id="tysonButton"
+            class="secondary tyson-button"
+            type="button"
+            title="Enable exactly the configured Tyson set list"
+          >
+            Tyson
+          </button>
         </div>
       </div>
 
@@ -190,7 +217,35 @@
     </section>
 
     <section id="resultsPanel" class="panel" hidden>
-      <div id="summary" class="summary"></div>
+
+      <div class="results-toolbar">
+        <div id="summary" class="summary"></div>
+
+        <label class="sort-control">
+          <span>Sort results</span>
+
+          <select id="resultSort">
+            <option value="default">
+              Default
+            </option>
+
+            <option value="alphabetical">
+              Alphabetical by set
+            </option>
+
+            <option value="coverage">
+              Most unique cards available
+            </option>
+          </select>
+        </label>
+      </div>
+
+      <div class="placement-help">
+        Hover a card to see every printing. From that popup,
+        you can change which storage location displays the card.
+        Selecting multiple locations displays the card in each one.
+      </div>
+
       <div id="results" class="results"></div>
     </section>
 
@@ -230,6 +285,7 @@
       Card data and images are provided by Scryfall.
       This is an unofficial community tool.
     </footer>
+
   </main>
 </body>
 </html>
